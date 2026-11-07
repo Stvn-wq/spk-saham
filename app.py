@@ -1,176 +1,292 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
 from datetime import datetime
 import sqlite3
+import pandas as pd
+import streamlit as st
+import yfinance as yf
 
-# 1. untuk konfigurasi halaman dashboard
+# 1. halaman dashboard utama
 st.set_page_config(
-    page_title="SPK Transaksi Saham Rule-Based",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="SPK Transaksi Saham", layout="centered", initial_sidebar_state="collapsed"
 )
 
-st.title("Sistem Pendukung Keputusan Rekomendasi Transaksi Saham")
-st.caption("Implementasi Metode Rule-Based dengan Parameter Dinamis SMA & RSI | Objek Saham Blue Chip BEI")
-
-# 2. panel mengontrol parameter di sidebar
-st.sidebar.header("Panel Pengaturan Parameter")
-
-# pilihan 3 saham blue chip
-pilihan_saham = st.sidebar.selectbox(
-    "Pilih Saham Blue Chip:",
-    options=["BBCA.JK", "BBRI.JK", "TLKM.JK"],
-    index=0,
-    help="BBCA (Perbankan Swasta), BBRI (Perbankan BUMN), TLKM (Infrastruktur)"
+# judul
+st.markdown(
+    "<h2 style='text-align: center; margin-bottom: 25px;'>Sistem Pendukung"
+    " Keputusan Transaksi Saham</h2>",
+    unsafe_allow_html=True,
 )
 
-# pemilihan rentang waktu (default 3 tahun: 1 Sep 2023 - 31 Agu 2026)
-tgl_mulai = st.sidebar.date_input("Tanggal Mulai:", datetime(2023, 9, 1))
-tgl_selesai = st.sidebar.date_input("Tanggal Selesai:", datetime(2026, 8, 31))
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Parameter Indikator Teknikal (Dinamis)")
-
-# mengatur slider indikator
-sma_periode = st.sidebar.slider("Periode SMA (Hari):", min_value=5, max_value=50, value=20, step=1)
-rsi_periode = st.sidebar.slider("Periode RSI (Hari):", min_value=7, max_value=30, value=14, step=1)
-rsi_oversold = st.sidebar.slider("Ambang Batas Jenuh Jual (Oversold):", min_value=10, max_value=40, value=30, step=1)
-rsi_overbought = st.sidebar.slider("Ambang Batas Jenuh Beli (Overbought):", min_value=60, max_value=90, value=70, step=1)
-
-tombol_proses = st.sidebar.button("Jalankan Analisis Keputusan", type="primary")
-
-# 3. fungsi perhitungan matematis indikatornya
-def hitung_indikator(df, periode_sma, periode_rsi):
-    # perhitungan SMA
-    df['SMA'] = df['Close'].rolling(window=periode_sma).mean()
-    
-    # Perhitungan RSI
-    perubahan_harga = df['Close'].diff()
-    gain = perubahan_harga.where(perubahan_harga > 0, 0.0)
-    loss = -perubahan_harga.where(perubahan_harga < 0, 0.0)
-    
-    # rata-rata eksponensial
-    avg_gain = gain.ewm(alpha=1/periode_rsi, min_periods=periode_rsi, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/periode_rsi, min_periods=periode_rsi, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    return df
- 
-# 4. mesin inferensi rule-based
-def evaluasi_rule_based(harga_terakhir, sma_terakhir, rsi_terakhir, batas_bawah, batas_atas):
-    # aturan 1 (R1): harga > SMA dan RSI <= batas bawah
-    if harga_terakhir > sma_terakhir and rsi_terakhir <= batas_bawah:
-        kode = "R1"
-        status = "Bullish Correction (Oversold in Uptrend)"
-        saran = "Harga terkoreksi di area jenuh jual saat tren naik. Disarankan mempertimbangkan aksi Akumulasi Beli (Buy on Weakness)."
-        warna = "success"
-
-    # aturan 2 (R2): harga > SMA dan RSI >= batas atas
-    elif harga_terakhir > sma_terakhir and rsi_terakhir >= batas_atas:
-        kode = "R2"
-        status = "Bullish Overextended (Overbought in Uptrend)"
-        saran = "Penguatan harga telah memasuki area jenuh beli. Disarankan mempertimbangkan aksi Jual Bertahap untuk Realisasi Keuntungan (Take Profit)."
-        warna = "warning"
-
-    # aturan 3 (R3): harga < SMA dan RSI >= batas atas
-    elif harga_terakhir < sma_terakhir and rsi_terakhir >= batas_atas:
-        kode = "R3"
-        status = "Bearish Pullback (Overbought in Downtrend)"
-        saran = "Kenaikan harga tertahan di area jenuh saat tren turun. Disarankan mempertimbangkan aksi Jual (Sell / Cut Loss) untuk membatasi risiko."
-        warna = "error"
-
-    # aturan 4 (R4): harga < SMA dan RSI <= batas bawah
-    elif harga_terakhir < sma_terakhir and rsi_terakhir <= batas_bawah:
-        kode = "R4"
-        status = "Strong Bearish (Oversold in Downtrend)"
-        saran = "Tekanan jual dominan pada tren turun. Disarankan Menunggu Konfirmasi Pasar (Wait and See) dan belum melakukan aksi beli."
-        warna = "info"
-
-    # Rule 5 (R5): Kondisi Momentum Netral
-    else:
-        kode = "R5"
-        status = "Neutral Momentum"
-        saran = "Pasar bergerak konsolidasi (sideways). Tidak ada sinyal transaksi (Wait and See) hingga konfirmasi arah tren terbentuk."
-        warna = "secondary"
-
-    return kode, status, saran, warna
-
-# sqlite (tempat local caching)
+# 2. penggunaan SQLite (untuk local cache)
 def ambil_data_saham(ticker, start_date, end_date):
     nama_tabel = ticker.replace(".", "_")
-    conn = sqlite3.connect("saham.db")
+    db_file = "saham.db"
+    conn = sqlite3.connect(db_file)
 
-    # Cek apakah data udah pernah disimpan di SQLite lokal atau belum
-    query = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'"
-    tabel_ada = pd.read_sql(query, conn)
+    str_start = start_date.strftime("%Y-%m-%d")
+    str_end = end_date.strftime("%Y-%m-%d")
 
+    # keberadaan tabel SQLite
+    query_cek = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'"
+    tabel_ada = pd.read_sql(query_cek, conn)
+
+    # kalau tabel ada, periksa apakah rentang tanggalnya tersedia
     if not tabel_ada.empty:
-        # Kalau ada, baca langsung dari SQLite
-        df = pd.read_sql(
-            f"SELECT * FROM {nama_tabel}", conn, index_col="Date", parse_dates=["Date"]
+        query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date <= '{str_end}'"
+        df_lokal = pd.read_sql(
+            query_data, conn, index_col="Date", parse_dates=["Date"]
         )
+        if not df_lokal.empty:
+            conn.close()
+            return df_lokal, "SQLite Lokal (Cache)"
+
+    # kalau belum ada di basis data lokal, tarik dulu dari yahoo finance
+    df_download = yf.download(
+        ticker, start=start_date, end=end_date, progress=False
+    )
+
+    if isinstance(df_download.columns, pd.MultiIndex):
+        df_download.columns = df_download.columns.get_level_values(0)
+
+    if not df_download.empty:
+        if df_download.index.tz is not None:
+            df_download.index = df_download.index.tz_localize(None)
+
+        # ambil kolom standar lalu simpan ke SQLite lokal
+        kolom_standar = ["Open", "High", "Low", "Close", "Volume"]
+        df_tersimpan = df_download[
+            [col for col in kolom_standar if col in df_download.columns]
+        ]
+        df_tersimpan.to_sql(nama_tabel, conn, if_exists="replace", index=True)
         conn.close()
-        return df, "SQLite Lokal (Cache)"
-    else:
-        # Kalau belum ada, unduh dari Yahoo Finance sekali aja
-        df = yf.download(ticker, start=start_date, end=end_date)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        return df_tersimpan, "Yahoo Finance"
 
-        # Simpan ke file SQLite lokal buat pemanggilan seterusnya
-        if not df.empty:
-            df.to_sql(nama_tabel, conn, if_exists="replace", index=True)
+    conn.close()
+    return pd.DataFrame(), "Data Tidak Ditemukan"
 
-        conn.close()
-        return df, "Yahoo Finance (Sinkronisasi Baru)"
+# 3. perhitungan indikator teknikal
+def hitung_indikator(df, periode_sma, periode_rsi):
+    # simple moving average (sma)
+    df["SMA"] = df["Close"].rolling(window=periode_sma).mean()
 
-# 5. eksekusi data dan tampilan dashboard
-if tombol_proses or True:
-    with st.spinner(f"Memuat data {pilihan_saham}..."):
-        df_mentah, sumber_data = ambil_data_saham(pilihan_saham, tgl_mulai, tgl_selesai)
+    # relative strength index (rsi)
+    perubahan_harga = df["Close"].diff()
+    gain = perubahan_harga.where(perubahan_harga > 0, 0.0)
+    loss = -perubahan_harga.where(perubahan_harga < 0, 0.0)
 
-    if df_mentah.empty:
-        st.error("Data gagal diambil. Pastikan koneksi internet aktif dan rentang tanggal valid.")
-    else:
-        # hitung indikator
-        df = hitung_indikator(df_mentah.copy(), sma_periode, rsi_periode)
-        df_valid = df.dropna().copy()
+    avg_gain = gain.ewm(
+        alpha=1 / periode_rsi, min_periods=periode_rsi, adjust=False
+    ).mean()
+    avg_loss = loss.ewm(
+        alpha=1 / periode_rsi, min_periods=periode_rsi, adjust=False
+    ).mean()
 
-        # ambil baris data penutupan terakhir (End of Day)
-        data_terakhir = df_valid.iloc[-1]
-        harga_close = float(data_terakhir['Close'])
-        nilai_sma = float(data_terakhir['SMA'])
-        nilai_rsi = float(data_terakhir['RSI'])
-        tgl_terakhir = df_valid.index[-1].strftime('%d-%m-%Y')
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    return df
 
-        # jalankan penalaran rule-based
-        kode_rule, status_pasar, saran_keputusan, tipe_warna = evaluasi_rule_based(
-            harga_close, nilai_sma, nilai_rsi, rsi_oversold, rsi_overbought
+# 4. rule-based (forward chaining)
+def evaluasi_rule_based(
+    harga_terakhir, sma_terakhir, rsi_terakhir, batas_bawah, batas_atas
+):
+    if harga_terakhir > sma_terakhir and rsi_terakhir <= batas_bawah:
+        status = "Bullish Correction (Oversold in Uptrend)"
+        saran = (
+            "Harga terkoreksi di area jenuh jual saat tren naik. Disarankan"
+            " mempertimbangkan aksi Akumulasi Beli (Buy on Weakness)."
         )
+        warna = "success"
+    elif harga_terakhir > sma_terakhir and rsi_terakhir >= batas_atas:
+        status = "Bullish Overextended (Overbought in Uptrend)"
+        saran = (
+            "Penguatan harga telah memasuki area jenuh beli. Disarankan"
+            " mempertimbangkan aksi Jual Bertahap untuk Realisasi Keuntungan"
+            " (Take Profit)."
+        )
+        warna = "warning"
+    elif harga_terakhir < sma_terakhir and rsi_terakhir >= batas_atas:
+        status = "Bearish Pullback (Overbought in Downtrend)"
+        saran = (
+            "Kenaikan harga tertahan di area jenuh saat tren turun. Disarankan"
+            " mempertimbangkan aksi Jual (Sell / Cut Loss) untuk membatasi"
+            " risiko."
+        )
+        warna = "error"
+    elif harga_terakhir < sma_terakhir and rsi_terakhir <= batas_bawah:
+        status = "Strong Bearish (Oversold in Downtrend)"
+        saran = (
+            "Tekanan jual dominan pada tren turun. Disarankan Menunggu"
+            " Konfirmasi Pasar (Wait and See) dan belum melakukan aksi beli."
+        )
+        warna = "info"
+    else:
+        status = "Neutral Momentum"
+        saran = (
+            "Pasar bergerak konsolidasi (sideways). Tidak ada sinyal transaksi"
+            " (Wait and See) hingga konfirmasi arah tren terbentuk."
+        )
+        warna = "info"
 
-        # ringkasan nilai metrik
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Saham Terpilih", pilihan_saham.replace(".JK", ""))
-        col2.metric("Harga Penutupan (Close)", f"Rp {harga_close:,.0f}", f"Per {tgl_terakhir}")
-        col3.metric(f"Nilai SMA-{sma_periode}", f"Rp {nilai_sma:,.0f}", f"Posisi: {'Diatas' if harga_close > nilai_sma else 'Dibawah'} SMA")
-        col4.metric(f"Nilai RSI-{rsi_periode}", f"{nilai_rsi:.2f}", f"Oversold ≤ {rsi_oversold} | Overbought ≥ {rsi_overbought}")
+    return status, saran, warna
 
-        st.markdown("---")
+# 5. pemilihan untuk user
+# Pilihan Saham
+pilihan_saham = st.selectbox(
+    "Pilih saham:", options=["BBCA.JK", "BBRI.JK", "TLKM.JK"], index=0,
+    filter_mode=None, # menonaktifkan keyboard, jadi user g bisa ketik cuman bisa klik
+)
 
-        # kotak saran deskriptif hasil keputusan
-        st.subheader("Rekomendasi Keputusan Transaksi (Hasil Inferensi)")
-        st.caption(f"Sumber Data: {sumber_data}")
-        if tipe_warna == "success":
-            st.success(f"**[{kode_rule}] Status: {status_pasar}**\n\n{saran_keputusan}")
-        elif tipe_warna == "warning":
-            st.warning(f"**[{kode_rule}] Status: {status_pasar}**\n\n{saran_keputusan}")
-        elif tipe_warna == "error":
-            st.error(f"**[{kode_rule}] Status: {status_pasar}**\n\n{saran_keputusan}")
+# rentang waktu
+col_tgl1, col_tgl2 = st.columns(2)
+with col_tgl1:
+    tgl_mulai = st.date_input("Tanggal Mulai:", datetime(2023, 9, 1))
+with col_tgl2:
+    tgl_selesai = st.date_input("Tanggal Selesai:", datetime(2026, 8, 31))
+
+# keterangan selisih hari
+selisih_hari = (tgl_selesai - tgl_mulai).days
+if selisih_hari > 0:
+    st.caption(f"Rentang waktu: {selisih_hari} hari")
+else:
+    st.caption("Peringatan: Tanggal selesai harus lebih besar dari tanggal mulai.")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# parameter indikator teknikal
+st.markdown("##### Parameter indikator teknikal")
+col_sma, col_rsi = st.columns(2)
+with col_sma:
+  sma_periode = st.slider(
+      "Periode SMA (Hari):", min_value=5, max_value=50, value=20, step=1
+  )
+with col_rsi:
+  rsi_periode = st.slider(
+      "Periode RSI (Hari):", min_value=7, max_value=30, value=14, step=1
+  )
+
+col_os, col_ob = st.columns(2)
+with col_os:
+  rsi_oversold = st.slider(
+      "Ambang batas jenuh jual (oversold):",
+      min_value=10,
+      max_value=40,
+      value=30,
+      step=1,
+  )
+with col_ob:
+  rsi_overbought = st.slider(
+      "Ambang batas jenuh beli (overbought):",
+      min_value=60,
+      max_value=90,
+      value=70,
+      step=1,
+  )
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# tombol mulai analisis
+tombol_analisis = st.button("Mulai analisis", type="primary", use_container_width=True)
+
+# 6. hasil keputusan (muncul pas tombol diklik aja)
+if tombol_analisis:
+    if selisih_hari <= 0:
+        st.error(
+            "Gagal memproses: Rentang tanggal tidak valid. Pastikan Tanggal"
+            " Selesai berada setelah Tanggal Mulai."
+        )
+    else:
+        with st.spinner("Memproses data pasar dan mengevaluasi aturan..."):
+            df_mentah, sumber_data = ambil_data_saham(
+                pilihan_saham, tgl_mulai, tgl_selesai
+            )
+
+        if df_mentah.empty:
+            st.error(
+                "Data perdagangan tidak ditemukan untuk rentang tanggal"
+                " tersebut. Pastikan bursa aktif pada tanggal yang dipilih."
+            )
         else:
-            st.info(f"**[{kode_rule}] Status: {status_pasar}**\n\n{saran_keputusan}")
+            # hitung sma dan rsi
+            df_indikator = hitung_indikator(
+                df_mentah.copy(), sma_periode, rsi_periode
+            )
+            df_valid = df_indikator.dropna().copy()
 
-        # tabel data penutupan harian terakhir
-        with st.expander("Lihat Riwayat Data Tabel Terakhir"):
-            st.dataframe(df_valid[['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'Volume']].tail(10))
+            if df_valid.empty:
+                st.warning(
+                    "Jumlah data tidak mencukupi untuk menghitung indikator"
+                    f" dengan periode SMA-{sma_periode}. Perpanjang rentang"
+                    " tanggal observasi."
+                )
+            else:
+                # ambil data hari terakhir
+                baris_terakhir = df_valid.iloc[-1]
+                harga_close = float(baris_terakhir["Close"])
+                nilai_sma = float(baris_terakhir["SMA"])
+                nilai_rsi = float(baris_terakhir["RSI"])
+                tgl_terakhir = df_valid.index[-1].strftime("%d-%m-%Y")
+
+                # eksekusi rule-based
+                status_pasar, saran_keputusan, tipe_warna = evaluasi_rule_based(
+                    harga_close,
+                    nilai_sma,
+                    nilai_rsi,
+                    rsi_oversold,
+                    rsi_overbought,
+                )
+
+                st.markdown("---")
+
+                # kartu ringkasan metriknya
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                col_m1.metric("Saham Terpilih", pilihan_saham.replace(".JK", ""))
+                col_m2.metric(
+                    "Harga Penutupan (Close)",
+                    f"Rp {harga_close:,.0f}",
+                    f"Per {tgl_terakhir}",
+                )
+
+                status_posisi_sma = (
+                    "Di atas SMA" if harga_close > nilai_sma else "Di bawah SMA"
+                )
+                col_m3.metric(
+                    f"Nilai SMA-{sma_periode}",
+                    f"Rp {nilai_sma:,.0f}",
+                    status_posisi_sma,
+                )
+
+                status_momentum = (
+                    "Oversold"
+                    if nilai_rsi <= rsi_oversold
+                    else ("Overbought" if nilai_rsi >= rsi_overbought else "Netral")
+                )
+                col_m4.metric(
+                    f"Nilai RSI-{rsi_periode}",
+                    f"{nilai_rsi:.2f}",
+                    f"Area {status_momentum}",
+                )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # kotak hasil rekomendasi
+                st.markdown("##### Hasil rekomendasi:")
+                pesan_rekomendasi = (
+                    f"**Status Kondisi Pasar:** {status_pasar}\n\n"
+                    f"**Saran Tindakan:** {saran_keputusan}"
+                )
+
+                if tipe_warna == "success":
+                    st.success(pesan_rekomendasi)
+                elif tipe_warna == "warning":
+                    st.warning(pesan_rekomendasi)
+                elif tipe_warna == "error":
+                    st.error(pesan_rekomendasi)
+                else:
+                    st.info(pesan_rekomendasi)
+
+                st.caption(f"Sumber Data: {sumber_data}")
+                st.caption(
+                    "Hasil rekomendasi ini merupakan analisis pendukung"
+                    " keputusan berbasis data historis dan aturan logika"
+                    " teknikal (Rule-Based), bukan jaminan mutlak pergerakan"
+                    " pasar. Keputusan akhir transaksi tetap berada sepenuhnya"
+                    " pada pertimbangan mandiri investor.")
