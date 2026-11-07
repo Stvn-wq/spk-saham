@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
+import sqlite3
 
 # 1. untuk konfigurasi halaman dashboard
 st.set_page_config(
@@ -96,15 +97,39 @@ def evaluasi_rule_based(harga_terakhir, sma_terakhir, rsi_terakhir, batas_bawah,
 
     return kode, status, saran, warna
 
+# sqlite (tempat local caching)
+def ambil_data_saham(ticker, start_date, end_date):
+    nama_tabel = ticker.replace(".", "_")
+    conn = sqlite3.connect("saham.db")
+
+    # Cek apakah data udah pernah disimpan di SQLite lokal atau belum
+    query = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'"
+    tabel_ada = pd.read_sql(query, conn)
+
+    if not tabel_ada.empty:
+        # Kalau ada, baca langsung dari SQLite
+        df = pd.read_sql(
+            f"SELECT * FROM {nama_tabel}", conn, index_col="Date", parse_dates=["Date"]
+        )
+        conn.close()
+        return df, "SQLite Lokal (Cache)"
+    else:
+        # Kalau belum ada, unduh dari Yahoo Finance sekali aja
+        df = yf.download(ticker, start=start_date, end=end_date)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # Simpan ke file SQLite lokal buat pemanggilan seterusnya
+        if not df.empty:
+            df.to_sql(nama_tabel, conn, if_exists="replace", index=True)
+
+        conn.close()
+        return df, "Yahoo Finance (Sinkronisasi Baru)"
+
 # 5. eksekusi data dan tampilan dashboard
 if tombol_proses or True:
-    with st.spinner(f"Mengambil data historis {pilihan_saham} dari Yahoo Finance..."):
-        # tarik data lewat yfinance
-        df_mentah = yf.download(pilihan_saham, start=tgl_mulai, end=tgl_selesai)
-        
-        # penyesuaian kolom kalau MultiIndex
-        if isinstance(df_mentah.columns, pd.MultiIndex):
-            df_mentah.columns = df_mentah.columns.get_level_values(0)
+    with st.spinner(f"Memuat data {pilihan_saham}..."):
+        df_mentah, sumber_data = ambil_data_saham(pilihan_saham, tgl_mulai, tgl_selesai)
 
     if df_mentah.empty:
         st.error("Data gagal diambil. Pastikan koneksi internet aktif dan rentang tanggal valid.")
@@ -136,6 +161,7 @@ if tombol_proses or True:
 
         # kotak saran deskriptif hasil keputusan
         st.subheader("Rekomendasi Keputusan Transaksi (Hasil Inferensi)")
+        st.caption(f"Sumber Data: {sumber_data}")
         if tipe_warna == "success":
             st.success(f"**[{kode_rule}] Status: {status_pasar}**\n\n{saran_keputusan}")
         elif tipe_warna == "warning":
