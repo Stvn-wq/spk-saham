@@ -35,7 +35,8 @@ def ambil_data_saham(ticker, start_date, end_date):
         df_lokal = pd.read_sql(
             query_data, conn, index_col="Date", parse_dates=["Date"]
         )
-        if not df_lokal.empty:
+        # data riwayat di SQLite hanya dipakai kalau datanya mencukupi (minimal 20 baris untuk hitungan SMA)
+        if not df_lokal.empty and len(df_lokal) >= 20:
             conn.close()
             return df_lokal, "SQLite Lokal (Cache)"
 
