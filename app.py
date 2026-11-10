@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -23,7 +23,7 @@ def ambil_data_saham(ticker, start_date, end_date):
     conn = sqlite3.connect(db_file)
 
     str_start = start_date.strftime("%Y-%m-%d")
-    str_end = end_date.strftime("%Y-%m-%d")
+    str_end = (end_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
     # keberadaan tabel SQLite
     query_cek = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'"
@@ -31,7 +31,7 @@ def ambil_data_saham(ticker, start_date, end_date):
 
     # kalau tabel ada, periksa apakah rentang tanggalnya tersedia
     if not tabel_ada.empty:
-        query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date <= '{str_end}'"
+        query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date < '{str_end}'"
         df_lokal = pd.read_sql(
             query_data, conn, index_col="Date", parse_dates=["Date"]
         )
@@ -41,7 +41,7 @@ def ambil_data_saham(ticker, start_date, end_date):
 
     # kalau belum ada di basis data lokal, tarik dulu dari yahoo finance
     df_download = yf.download(
-        ticker, start=start_date, end=end_date, progress=False
+        ticker, start=start_date, end=str_end, progress=False
     )
 
     if isinstance(df_download.columns, pd.MultiIndex):
@@ -136,18 +136,42 @@ pilihan_saham = st.selectbox(
 )
 
 # rentang waktu
+from datetime import timedelta
+
+batas_tertua = datetime(2004, 10, 1).date()
+hari_ini = datetime.now().date()
+
 col_tgl1, col_tgl2 = st.columns(2)
 with col_tgl1:
-    tgl_mulai = st.date_input("Tanggal Mulai:", datetime(2023, 9, 1))
-with col_tgl2:
-    tgl_selesai = st.date_input("Tanggal Selesai:", datetime(2026, 8, 31))
+  tgl_mulai = st.date_input(
+      "Tanggal Mulai:",
+      value=datetime(2023, 9, 1).date(),
+      min_value=batas_tertua,
+      max_value=hari_ini,
+  )
 
-# keterangan selisih hari
+# kunci batas tanggal selesai pas 3 tahun dari tanggal mulai
+maks_tgl_selesai = min(hari_ini, tgl_mulai + timedelta(days=1095))
+
+with col_tgl2:
+  # nilai default dan batas maksimalnya otomatis ikut maks_tgl_selesai
+  tgl_selesai = st.date_input(
+      "Tanggal Selesai:",
+      value=maks_tgl_selesai,
+      min_value=tgl_mulai,
+      max_value=maks_tgl_selesai,
+  )
+
 selisih_hari = (tgl_selesai - tgl_mulai).days
-if selisih_hari > 0:
-    st.caption(f"Rentang waktu: {selisih_hari} hari")
+
+# keterangan rentang waktu
+if selisih_hari < 30:
+  st.caption(
+      "Peringatan: Rentang waktu minimal 30 hari kalender agar indikator dapat"
+      " dihitung."
+  )
 else:
-    st.caption("Peringatan: Tanggal selesai harus lebih besar dari tanggal mulai.")
+  st.caption(f"Rentang waktu: {selisih_hari} hari (maksimal hanya 3 tahun)")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -188,10 +212,10 @@ tombol_analisis = st.button("Mulai analisis", type="primary", use_container_widt
 
 # 6. hasil keputusan (muncul pas tombol diklik aja)
 if tombol_analisis:
-    if selisih_hari <= 0:
+    if selisih_hari < 30:
         st.error(
-            "Gagal memproses: Rentang tanggal tidak valid. Pastikan Tanggal"
-            " Selesai berada setelah Tanggal Mulai."
+            "Gagal memproses: Rentang tanggal tidak valid. Pastikan rentang"
+            " waktu minimal 30 hari."
         )
     else:
         with st.spinner("Memproses data pasar dan mengevaluasi aturan..."):
