@@ -31,14 +31,18 @@ def ambil_data_saham(ticker, start_date, end_date):
 
     # kalau tabel ada, periksa apakah rentang tanggalnya tersedia
     if not tabel_ada.empty:
-        query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date < '{str_end}'"
-        df_lokal = pd.read_sql(
-            query_data, conn, index_col="Date", parse_dates=["Date"]
-        )
-        # data riwayat di SQLite hanya dipakai kalau datanya mencukupi (minimal 20 baris untuk hitungan SMA)
-        if not df_lokal.empty and len(df_lokal) >= 20:
-            conn.close()
-            return df_lokal, "SQLite Lokal (Cache)"
+      query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date < '{str_end}'"
+      df_lokal = pd.read_sql(
+          query_data, conn, index_col="Date", parse_dates=["Date"]
+      )
+      # ini kalau data riwayat lengkap di database, mencukupi periode indikator, dan mencakup akhir rentang tanggal (toleransi 4 hari libur bursa)
+      if (
+          not df_lokal.empty
+          and len(df_lokal) >= 20
+          and (end_date - df_lokal.index.max().date()).days <= 4
+      ):
+        conn.close()
+        return df_lokal, "SQLite Lokal (Cache)"
 
     # kalau belum ada di basis data lokal, tarik dulu dari yahoo finance
     df_download = yf.download(
