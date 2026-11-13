@@ -242,8 +242,10 @@ if tombol_analisis:
 
             if df_valid.empty:
                 st.warning(
-                    "Jumlah data tidak mencukupi untuk menghitung indikator"
-                    f" dengan periode SMA-{sma_periode}. Perpanjang rentang"
+                    f"Data perdagangan yang tercatat pada rentang ini hanya ada"
+                    f" {len(df_mentah)} baris, sehingga tidak mencukupi untuk"
+                    f" menghitung indikator periode SMA-{sma_periode} (memerlukan"
+                    f" minimal {sma_periode} baris data). Perpanjang rentang"
                     " tanggal observasi."
                 )
             else:
