@@ -39,7 +39,7 @@ def ambil_data_saham(ticker, start_date, end_date):
       if (
           not df_lokal.empty
           and len(df_lokal) >= 20
-          and (end_date - df_lokal.index.max().date()).days <= 4
+          and (end_date - df_lokal.index.max().date()).days <= 10
       ):
         conn.close()
         return df_lokal, "SQLite Lokal (Cache)"
@@ -144,7 +144,7 @@ pilihan_saham = st.selectbox(
 from datetime import timedelta
 
 batas_tertua = datetime(2004, 10, 1).date()
-hari_ini = datetime.now().date()
+hari_ini = datetime(2026, 10, 31).date()
 
 col_tgl1, col_tgl2 = st.columns(2)
 with col_tgl1:
