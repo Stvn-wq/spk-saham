@@ -18,55 +18,99 @@ st.markdown(
 
 # 2. penggunaan SQLite (untuk local cache)
 def ambil_data_saham(ticker, start_date, end_date):
-    nama_tabel = ticker.replace(".", "_")
-    db_file = "saham.db"
-    conn = sqlite3.connect(db_file)
+  nama_tabel = ticker.replace(".", "_")
+  conn = sqlite3.connect("saham.db")
+  str_start = start_date.strftime("%Y-%m-%d")
+  str_end = (end_date + timedelta(days=1)).strftime("%Y-%m-%d")
+  kolom_standar = ["Open", "High", "Low", "Close", "Volume"]
 
-    str_start = start_date.strftime("%Y-%m-%d")
-    str_end = (end_date + timedelta(days=1)).strftime("%Y-%m-%d")
+  def unduh_yf(t_start, t_end):
+    df_dl = yf.download(ticker, start=t_start, end=t_end, progress=False)
+    if isinstance(df_dl.columns, pd.MultiIndex):
+      df_dl.columns = df_dl.columns.get_level_values(0)
+    if not df_dl.empty:
+      if df_dl.index.tz is not None:
+        df_dl.index = df_dl.index.tz_localize(None)
+      return df_dl[[col for col in kolom_standar if col in df_dl.columns]]
+    return pd.DataFrame()
 
-    # keberadaan tabel SQLite
-    query_cek = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'"
-    tabel_ada = pd.read_sql(query_cek, conn)
+  tabel_ada = not pd.read_sql(
+      f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'",
+      conn,
+  ).empty
+  sumber = "SQLite Lokal (Cache)"
 
-    # kalau tabel ada, periksa apakah rentang tanggalnya tersedia
-    if not tabel_ada.empty:
-      query_data = f"SELECT * FROM {nama_tabel} WHERE Date >= '{str_start}' AND Date < '{str_end}'"
-      df_lokal = pd.read_sql(
-          query_data, conn, index_col="Date", parse_dates=["Date"]
-      )
-      # ini kalau data riwayat lengkap di database, mencukupi periode indikator, dan mencakup akhir rentang tanggal (toleransi 4 hari libur bursa)
-      if (
-          not df_lokal.empty
-          and len(df_lokal) >= 20
-          and (end_date - df_lokal.index.max().date()).days <= 10
-      ):
-        conn.close()
-        return df_lokal, "SQLite Lokal (Cache)"
-
-    # kalau belum ada di basis data lokal, tarik dulu dari yahoo finance
-    df_download = yf.download(
-        ticker, start=start_date, end=str_end, progress=False
+  if not tabel_ada:
+    df_baru = unduh_yf(start_date, str_end)
+    if not df_baru.empty:
+      df_baru.to_sql(nama_tabel, conn, if_exists="replace", index=True)
+      sumber = "Yahoo Finance (Sinkronisasi Awal)"
+  else:
+    batas = pd.read_sql(
+        f"SELECT MIN(Date) as min_d, MAX(Date) as max_d FROM {nama_tabel}", conn
     )
+    min_raw, max_raw = batas["min_d"].iloc[0], batas["max_d"].iloc[0]
 
-    if isinstance(df_download.columns, pd.MultiIndex):
-        df_download.columns = df_download.columns.get_level_values(0)
+    if min_raw is None or max_raw is None:
+      df_baru = unduh_yf(start_date, str_end)
+      if not df_baru.empty:
+        df_baru.to_sql(nama_tabel, conn, if_exists="replace", index=True)
+        sumber = "Yahoo Finance"
+    else:
+      min_db = pd.to_datetime(min_raw).date()
+      max_db = pd.to_datetime(max_raw).date()
 
-    if not df_download.empty:
-        if df_download.index.tz is not None:
-            df_download.index = df_download.index.tz_localize(None)
+      # Sesuaikan hari sabtu sama minggu biar ga memicu unduhan kosong
+      target_end = end_date
+      while target_end.weekday() >= 5:
+        target_end -= timedelta(days=1)
 
-        # ambil kolom standar lalu simpan ke SQLite lokal
-        kolom_standar = ["Open", "High", "Low", "Close", "Volume"]
-        df_tersimpan = df_download[
-            [col for col in kolom_standar if col in df_download.columns]
+      bagian_tambahan = []
+      if start_date < min_db and (min_db - start_date).days > 4:
+        df_lama = unduh_yf(start_date, min_db.strftime("%Y-%m-%d"))
+        if not df_lama.empty:
+          bagian_tambahan.append(df_lama)
+
+      if target_end > max_db:
+        df_terbaru = unduh_yf(
+            (max_db + timedelta(days=1)).strftime("%Y-%m-%d"), str_end
+        )
+        if not df_terbaru.empty:
+          bagian_tambahan.append(df_terbaru)
+
+      if bagian_tambahan:
+        df_gabung = pd.concat(bagian_tambahan)
+        tanggal_ada = set(
+            pd.to_datetime(
+                pd.read_sql(f"SELECT Date FROM {nama_tabel}", conn)["Date"]
+            ).dt.strftime("%Y-%m-%d")
+        )
+        df_sisip = df_gabung[
+            ~df_gabung.index.strftime("%Y-%m-%d").isin(tanggal_ada)
         ]
-        df_tersimpan.to_sql(nama_tabel, conn, if_exists="replace", index=True)
-        conn.close()
-        return df_tersimpan, "Yahoo Finance"
+        if not df_sisip.empty:
+          df_sisip.to_sql(nama_tabel, conn, if_exists="append", index=True)
+          sumber = "SQLite Lokal + Yahoo Finance (Sinkronisasi Tambahan)"
 
-    conn.close()
-    return pd.DataFrame(), "Data Tidak Ditemukan"
+  tabel_masih_ada = not pd.read_sql(
+      f"SELECT name FROM sqlite_master WHERE type='table' AND name='{nama_tabel}'",
+      conn,
+  ).empty
+  if tabel_masih_ada:
+    query_data = (
+        f"SELECT * FROM {nama_tabel} "
+        f"WHERE Date >= '{str_start}' AND Date < '{str_end}' "
+        f"ORDER BY Date ASC"
+    )
+    df_hasil = pd.read_sql(
+        query_data, conn, index_col="Date", parse_dates=["Date"]
+    )
+  else:
+    df_hasil = pd.DataFrame()
+    sumber = "Data Tidak Ditemukan"
+
+  conn.close()
+  return df_hasil, sumber
 
 # 3. perhitungan indikator teknikal
 def hitung_indikator(df, periode_sma, periode_rsi):
@@ -144,7 +188,7 @@ pilihan_saham = st.selectbox(
 from datetime import timedelta
 
 batas_tertua = datetime(2004, 10, 1).date()
-hari_ini = datetime(2026, 10, 31).date()
+hari_ini = datetime.now().date()
 
 col_tgl1, col_tgl2 = st.columns(2)
 with col_tgl1:
